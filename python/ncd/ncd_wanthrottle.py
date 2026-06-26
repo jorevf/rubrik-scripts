@@ -35,6 +35,10 @@ def screenput(data):
          print(data)
 
 def main(argv):
+# Needed values for restapi communication.
+    access_token    = "<ncd access token>"
+    url             = "https://<custmer ncd tenant>.nascd.rubrik.com"
+    api_call        = "/x/igneous/v2/wan-throttling-config"
 
 # Initiate the parser
     parser = argparse.ArgumentParser()
@@ -82,6 +86,7 @@ def main(argv):
         if args.uplimit:
             screenput("Set upload throttling to %s " % args.uplimit + " MB/sec")
             uploadLimit = int(args.uplimit)
+	# Expected values is in Bytes, hench the convert from MB to Bytes.
             uploadLimit *= 1024000
         else:
             print("Need an upload limit value in MB/Sec")
@@ -90,14 +95,13 @@ def main(argv):
         if args.downlimit:
             screenput("Set download throttling to %s " % args.downlimit + " MB/sec")
             downloadLimit = int(args.downlimit)
+	# Expected values is in Bytes, hench the convert from MB to Bytes.
             downloadLimit *= 1024000
         else:
             print("Need an download limit value in MB/Sec")
             exit(3)
 
-    access_token    = "<ncd access token>"
-    url             = "https://<custmer ncd tenant>.nascd.rubrik.com"
-    api_call        = "/x/igneous/v2/wan-throttling-config"
+
 
     jsonData = {
                 'WANThrottlingEnabled': wanThrottling,
