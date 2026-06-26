@@ -1,3 +1,9 @@
+# The intetion with this powershell script, is to provide information how it
+# can be handled via Rubrik RSC Powershell extension.
+# This script should just be seen as an example.
+# 
+# F.jorevall 2026-06-25
+#
 # Install Rubrik Security Cloud powershell
 # Install-Module -Name RubrikSecurityCloud
 # Install service account file
