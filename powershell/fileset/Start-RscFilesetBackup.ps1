@@ -1,36 +1,41 @@
 #requires -Version 7.0
 
 <#
-This script creates an Fileset backup in Rubrik RSC.
-The parameters needed are hostname, fileset name and SLA name.
-Hostname can be either, hostname, FQDN or IP address (hostname, if DNS search domain has been set in CDM/Edge/CCES)
-The script reliese on Powershell 7.x
- 
-F.jorevall 2026-10-13
-
-Install Rubrik Security Cloud powershell
-Install-Module -Name RubrikSecurityCloud
-
-Install service account file: (Windows)
-Set-RscServiceAccountFile -InputFilePath .\my-authenication-file.json -OutputFilePath C:\Users\<user>\Documents\PowerShell\rubrik-powershell-sdk\rsc_service_account_default.xml
-
-Install service account file: (MacOS)
-Set-RscServiceAccountFile -InputFilePath ./my-authenication-file.json
-
-get-help <rubrik cmd> -full will give online help for the command.
-Online information regarding the Rubrik RSC powershell extension can be found here : https://developer.rubrik.com/SDKs-and-Tools/PowerShell/
-#>
-
-<#
 .SYNOPSIS
-    Start and monitor an RSC Windows fileset on-demand snapshot.
+    Start an on-demand RSC fileset snapshot without waiting for completion.
 .DESCRIPTION
-    Requires an authenticated Connect-Rsc session. Exact matches are mandatory;
-    invalid names stop execution. Supports -Quiet and -WhatIf.
+    Resolves the Windows/Linux host, fileset, SLA Domain and Rubrik cluster UUID.
+    Requires exact object matches, submits an asynchronous snapshot request,
+    and returns RequestId and ClusterUuid for Get-RscFilesetBackupStatus.ps1.
+    Does not monitor the backup after submission.
+.PARAMETER Hostname
+    Windows/Linux host registered in RSC.
+.PARAMETER FilesetName
+    RSC fileset to protect.
+.PARAMETER SlaName
+    SLA Domain applied to the on-demand snapshot.
+.PARAMETER Quiet
+    Suppresses informational messages; the result object is still returned.
 .EXAMPLE
-    ./Start-RscFilesetBackup.ps1 -Hostname my.server.local -FilesetName my-fileset-001 -SlaName my-sla-001 -Quiet
+    ./Start-RscFilesetBackup.ps1 -Hostname server01.example.com -FilesetName Example-Fileset -SlaName Example-SLA -Quiet
+    Submits a snapshot and returns the request information without log messages.
 .EXAMPLE
-    ./Start-RscFilesetBackup.ps1 -Hostname my.server.local -FilesetName my-fileset-001 -SlaName my-sla-001 -WhatIf
+    ./Start-RscFilesetBackup.ps1 -Hostname server01.example.com -FilesetName Example-Fileset -SlaName Example-SLA -WhatIf
+    Resolves the objects and shows the proposed operation without submitting it.
+.NOTES
+    Project: Rubrik RSC fileset automation
+    Author: Freddie Jörevall
+    Platform: PowerShell 7 / macOS, Linux, Windows
+    Dependencies: RubrikSecurityCloud PowerShell module
+
+    Requirements: PowerShell 7+, RubrikSecurityCloud module, authenticated Connect-Rsc session,
+                  and RSC permissions to view the objects and create fileset snapshots.
+    Design: Separate backup submission from status monitoring. Never guess or substitute
+            object names; abort before submission if resolution fails or is ambiguous.
+    Output: A PowerShell object containing the asynchronous RequestId and ClusterUuid.
+            Request acceptance does not imply backup completion or success.
+    Examples use fictional names and the reserved example.com domain.
+
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -38,10 +43,9 @@ param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Hostname,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FilesetName,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$SlaName,
-    [ValidateRange(1,3600)][int]$IntervalSeconds = 15,
-    [ValidateRange(1,1440)][int]$TimeoutMinutes = 120,
     [switch]$Quiet
 )
+
 
 $ErrorActionPreference = 'Stop'
 
@@ -89,10 +93,9 @@ $slaMatches = @(Get-RscSla -Name $SlaName | Where-Object { $_.Name -eq $SlaName 
 if ($slaMatches.Count -eq 0) {
     Stop-Script -Message "SLA Domain '$SlaName' was not found. No backup was started."
 }
-if ($slaMatches.Count -ne 1) {
-    Stop-Script -Message "Ambiguous SLA '$SlaName' ($($slaMatches.Count) matches). No backup was started."
+if ($slaMatches.Count -ne 1) { 
+    Stop-Script -Message "Ambiguous SLA '$SlaName' ($($slaMatches.Count) matches). No backup was started." 
 }
-
 $slaId = $slaMatches[0].Id
 if (-not $slaId) { 
     Stop-Script -Message "SLA '$SlaName' has no ID." 
@@ -106,9 +109,7 @@ $hostMatches = @(Get-RscHost -Name $Hostname -OsType Windows | Where-Object {
 if ($hostMatches.Count -eq 0) {
     Stop-Script -Message "Windows host '$Hostname' was not found. No backup was started."
 }
-if ($hostMatches.Count -ne 1) { 
-    Stop-Script -Message "Ambiguous Windows host '$Hostname' ($($hostMatches.Count) matches). No backup was started." 
-}
+if ($hostMatches.Count -ne 1) { Stop-Script -Message "Ambiguous Windows host '$Hostname' ($($hostMatches.Count) matches). No backup was started." }
 $hostObj = $hostMatches[0]
 Write-Log "RSC host       : $($hostObj.Name)"
 Write-Log "Host ID        : $($hostObj.Id)"
@@ -144,8 +145,8 @@ Write-Log 'Resolving fileset and Rubrik cluster...'
 $hostResult = Invoke-Rsc -GqlQuery $hostQuery -Var $hostVars
 $hostConnection = Get-QueryPayload -Response $hostResult -Field 'physicalHosts'
 $hostNodes = @($hostConnection.Nodes | Where-Object { $_.Name -eq $hostObj.Name })
-if ($hostNodes.Count -ne 1) { 
-    Stop-Script -Message "Expected one matching physicalHosts node for '$($hostObj.Name)', found $($hostNodes.Count)." 
+if ($hostNodes.Count -ne 1) {
+    Stop-Script -Message "Expected one matching physicalHosts node for '$($hostObj.Name)', found $($hostNodes.Count)."
 }
 $hostNode = $hostNodes[0]
 $filesetNodes = @($hostNode.DescendantConnection.Nodes)
@@ -161,11 +162,17 @@ $filesetId = $filesetNode.Id
 if (-not $filesetId) {
     Stop-Script -Message "Fileset '$FilesetName' has no ID." 
 }
-$clusterUuid = if ($filesetNode.Cluster -and $filesetNode.Cluster.Id) { $filesetNode.Cluster.Id } else { $hostNode.AgentPrimaryClusterUuid }
-if (-not $clusterUuid) {
+$clusterUuid = if ($filesetNode.Cluster -and $filesetNode.Cluster.Id) { 
+    $filesetNode.Cluster.Id 
+} 
+else { 
+    $hostNode.AgentPrimaryClusterUuid
+}
+if (-not $clusterUuid) { 
     Stop-Script -Message "Could not resolve cluster UUID for fileset '$FilesetName'." 
 }
-if ($clusterUuid -notmatch '^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+
+if ($clusterUuid -notmatch '^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { 
     Stop-Script -Message "Resolved cluster ID '$clusterUuid' is not a UUID. No backup was started." 
 }
 Write-Log "Fileset ID     : $filesetId"
@@ -197,56 +204,16 @@ $odsVars = @{
 Write-Log 'Triggering on-demand snapshot...'
 $odsResult = Invoke-Rsc -GqlQuery $odsMutation -Var $odsVars
 $odsResponse = Get-QueryPayload -Response $odsResult -Field 'createFilesetSnapshot'
-if (-not $odsResponse -or -not $odsResponse.Id) {
+if (-not $odsResponse -or -not $odsResponse.Id) { 
     Stop-Script -Message 'Snapshot mutation returned no request ID.' 
 }
 $requestId = [string]$odsResponse.Id
 Write-Log "Request ID     : $requestId"
 Write-Log "Initial status : $($odsResponse.Status)"
 
-$statusQuery = @'
-query CheckJobStatus($input: GetFilesetAsyncRequestStatusInput!) {
-  filesetRequestStatus(input: $input) {
-    status
-    startTime
-    endTime
-    nodeId
-    progress
-  }
-}
-'@
-$statusVars = @{ input=@{ clusterUuid=$clusterUuid; id=$requestId } }
-$terminalStates = @('SUCCEEDED','FAILED','CANCELED','CANCELLED')
-$deadline = (Get-Date).AddMinutes($TimeoutMinutes)
-Write-Log 'Monitoring snapshot...'
-while ($true) {
-    if ((Get-Date) -ge $deadline) { 
-        Stop-Script -Message "Timed out after $TimeoutMinutes minutes. Request ID: $requestId" 
-    }
-    $statusResult = Invoke-Rsc -GqlQuery $statusQuery -Var $statusVars
-    $job = Get-QueryPayload -Response $statusResult -Field 'filesetRequestStatus'
-    if (-not $job) { 
-        Stop-Script -Message "No status returned for request '$requestId'." 
-    }
-    $status = [string]$job.Status
-    if ([string]::IsNullOrWhiteSpace($status)) { 
-        Stop-Script -Message "Empty status returned for request '$requestId'." 
-    }
-    Write-Log ("[{0}] Status: {1} | Progress: {2}%" -f (Get-Date -Format 'HH:mm:ss'), $status, $job.Progress)
-    if ($status -in $terminalStates) {
-        break 
-    }
-    Start-Sleep -Seconds $IntervalSeconds
-}
-Write-Log "Final status   : $status"
-Write-Log "Start time     : $($job.StartTime)"
-Write-Log "End time       : $($job.EndTime)"
-if ($status -ne 'SUCCEEDED') { 
-    Stop-Script -Message "Fileset backup ended with status '$status'. Request ID: $requestId" 
-}
+# Return identifiers for a separate status check.
 [pscustomobject]@{
     Hostname=$hostObj.Name; FilesetName=$filesetNode.Name; FilesetId=$filesetId
     SlaName=$slaMatches[0].Name; SlaId=$slaId; ClusterUuid=$clusterUuid
-    RequestId=$requestId; Status=$status; Progress=$job.Progress
-    StartTime=$job.StartTime; EndTime=$job.EndTime; NodeId=$job.NodeId
+    RequestId=$requestId; Status=[string]$odsResponse.Status
 }
